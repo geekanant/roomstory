@@ -2,8 +2,11 @@ import streamlit as st
 import requests
 import time
 import random
+import cloudinary
+import cloudinary.uploader
 import tempfile
 from PIL import Image
+from io import BytesIO
 
 API_KEY = "67e3a2293a0da9a4f60d0a18"
 BASE_URL = "https://api.reimaginehome.ai"
@@ -12,16 +15,31 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def upload_image_to_imgbb(image_path):
-    # You can use any image hosting API here, or serve locally
-    with open(image_path, "rb") as file:
-        response = requests.post(
-            "https://api.imgbb.com/1/upload",
-            params={"key": "193a62a7113a66b4a6e931b29fd5d605"},
-            files={"image": file},
-            verify=False
-        )
-    return response.json()["data"]["url"]
+CLOUD_NAME = "dj4uxgxqp"
+UPLOAD_PRESET = "testunsigned"
+
+
+def upload_to_cloudinary(image, filename):
+    """Uploads a PIL image to Cloudinary and returns the public URL."""
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    buffer.seek(0)
+
+    url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/image/upload"
+    payload = {
+        "upload_preset": UPLOAD_PRESET,
+        "public_id": filename,
+        "folder": "object_crops/"
+    }
+    files = {"file": ("image.jpg", buffer, "image/jpeg")}
+
+    response = requests.post(url, data=payload, files=files, verify=False)
+    
+    if response.status_code == 200:
+        return response.json().get("secure_url")
+    else:
+        st.error(f"Cloudinary Upload Error: {response.text}")
+        return None
 
 def create_mask(image_url):
     url = f"{BASE_URL}/v1/create_mask"
@@ -51,13 +69,13 @@ def generate_image(image_url, mask_urls, mask_categories, design_theme, color_pr
     payload = {
         "image_url": image_url,
         "mask_urls": mask_urls,
-        "mask_category": "furnishing",
+        "mask_category": "furnishing",  # Multiple categories combined
         "space_type": "ST-INT-003",
-        "design_theme": design_theme,
+        "design_theme": "DT-INT-008",
         "masking_element": "",
-        "color_preference": color_preference,
+        "color_preference": "green,yellow,black",
         "material_preference": "",
-        "landscaping_preference": landscaping_preference,
+        "landscaping_preference": "",
         "generation_count": 3,
         "webhook_url": "https://example.com/mywebhook/endpoint"
     }
@@ -80,14 +98,15 @@ st.title("🏠 Roomstory - Interior AI")
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    st.image(uploaded_file, caption="Uploaded Image", use_column_width=True)
+    image = Image.open(uploaded_file)
+    st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
 
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp.write(uploaded_file.read())
         temp_path = tmp.name
 
     st.info("Uploading image to imgbb...")
-    image_url = upload_image_to_imgbb(temp_path)
+    image_url = upload_to_cloudinary(image, filename="reimagine_input")
     st.success("Image uploaded!")
 
     st.info("Creating mask...")
@@ -109,27 +128,19 @@ if uploaded_file:
             mask_categories = list(set(cat for m in masks for cat in m["category"].split(",")))
 
             st.success("Mask created!")
-            st.image(mask_urls[0], caption="First Mask", use_column_width=True)
+            st.image(mask_urls[0], caption="First Mask", use_container_width=True)
 
-            # Get Preferences
-            design_theme = random.choice(get_design_theme_list()["data"]["interior_themes"][0].values())
-            color_pref = random.choice(get_color_preference_list()["data"]["color"])
-            landscaping = random.choice(get_landscaping_preference_list()["data"]["pathways"])
 
-            st.write(f"🎨 Theme: {design_theme}")
-            st.write(f"🖌️ Colors: {color_pref}")
-            st.write(f"🌿 Landscaping: {landscaping}")
+            # if st.button("Generate Designs"):
+            with st.spinner("Generating new designs..."):
+                gen_job_id = generate_image(image_url, mask_urls, mask_categories, "", "", "")
+                results = get_generated_image(gen_job_id)
 
-            if st.button("Generate Designs"):
-                with st.spinner("Generating new designs..."):
-                    gen_job_id = generate_image(image_url, mask_urls, mask_categories, design_theme, color_pref, landscaping)
-                    results = get_generated_image(gen_job_id)
-
-                if results:
-                    st.success("Designs generated successfully!")
-                    for img_url in results:
-                        st.image(img_url, use_column_width=True)
-                else:
-                    st.error("Image generation failed.")
+            if results:
+                st.success("Designs generated successfully!")
+                for img_url in results:
+                    st.image(img_url, use_container_width=True)
+            else:
+                st.error("Image generation failed.")
         else:
             st.error("Mask creation failed.")
